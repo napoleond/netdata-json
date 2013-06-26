@@ -1,0 +1,386 @@
+%{
+    ********* JSON tools for Net.Data ***********
+    This Net.Data JSON parser operates on a subset
+    of JSON. It only works with JSON structures of
+    the form {...} or [{...},{...},...,{...}] and
+    builds a table of corresponding values. The
+    JSON strings will ultimately be passed in as
+    (URL encoded) GET or POST variables.
+
+    The to_json function creates a JSON string of
+    the above form based on a given table.
+%}
+
+%DEFINE {
+    %{
+        This is the table that will hold the
+        parsed data.
+    %}
+    json_table = %TABLE
+
+    %{
+        A simple JSON string for testing.
+    %}
+    test_json = {{"first_name":"David","last_name":"Noel"}%}
+    test_json2 = {[{"first_name":"Blake","last_name":"McArthur"},{"first_name":"David","last_name":"Noel"}]%}
+    test_json3 = {
+        [{"first_name" : "Blake",
+          "last_name"  : "McArthur"},
+         {"first_name" : "David",
+          "last_name"  : "Noell"}
+          ]
+          %}
+%}
+
+%FUNCTION(DTW_REXX) parse_json (IN json, INOUT table) {
+    /*
+        parse_stack will be used as a makeshift
+        "stack" for keeping track of parse
+        position in nested structures.
+        Basically, each time a new level of the
+        structure is encountered, a new letter
+        will be added to this string, and then
+        removed when the end token is found.
+        "o" denotes an object, "a" an array,
+        and "s" a string. "k" and "v" are used
+        to denote whether the item is a key or
+        a value.
+    */
+    parse_stack = ""
+
+    /*
+        Possible states are as follows (see the
+        code in their respective sections of the
+        parse loop for a better understanding).
+
+        "go" :  Opening state. Walks through
+            whitespace until { or [.
+        "key" : Look for " to start collecting
+            key name in "str" state.
+        "endkey" :  "str" exits here when
+                dealing with a key.
+                This is where table
+                columns can be defined.
+        "val" : Look for opening character to
+            decide which state to collect
+            value in (obj, arr, or str), if
+            any (true, false, and null are
+            extracted in this state).
+        "endval" :  After value has been
+                collected, this state
+                becomes active. This is
+                where row values can
+                be set.
+        "str" : Run through "string" type
+            tokens, ignoring escaped
+            sequences.
+        "obj" : Run through an object or a
+            series of nested objects.
+        "arr" : Run through an array or a series
+            of nested arrays.
+        "done" : Final state.
+        "error" : Exit.
+    */
+    state = "go"
+
+    /*
+        collecting is a boolean for knowing
+        when to append characters to collector,
+        which stores items for extraction from
+        the JSON object.
+    */
+    collecting = 0
+    collector = ""
+
+    /*
+        These counters keep track of position
+        in the table.
+    */
+    column = 1
+    row = 1
+
+    do while json <> ''                 /* iterate through json string until it is empty */
+        parse var json 1 char 2 json    /* pull the first character from the json string */
+
+
+        if collecting = 1 then
+            collector = collector || char
+
+        select
+
+            when state = "go" then do
+                column = 1
+                if char = '[' & parse_stack = '' then
+                    parse_stack = parse_stack || "a"
+                else if char = '{' then do
+                    parse_stack = parse_stack || "o"
+                    state = "key"
+                    end
+                else if char = '' | char = x2c('15') then /* whitespace matches null value */
+                    nop
+                else do
+                    state = "error"
+                    say 'error at 1 with char =#'c2x(char)'#<br>'
+                    end
+                end
+
+            when state = "key" then do
+                if char = '"' then do
+                    parse_stack = parse_stack || "ks"
+                    collector = char
+                    collecting = 1
+                    state = "str"
+                    end
+                else if char = '' | char = x2c('15') then /* whitespace matches null value */
+                    nop
+                else do
+                    say 'error at 2<br>'
+                    state = "error"
+                    end
+                end
+
+            when state = "endkey" then do
+                collecting = 0
+                if char = ":" & Right(parse_stack,1) = "k" then do
+                    parse_stack = Delstr(parse_stack, Length(parse_stack) )
+                    parse var collector '"' key '"'
+                    table_N.column = key
+                    collector = ""
+                    state = "val"
+                    end
+                else if char = '' | char = x2c('15') then /* whitespace matches null value */
+                    nop
+                else do
+                    say 'error at 3<br>'
+                    state = "error"
+                    end
+                end
+
+            when state = "val" then do
+                if char = '"' then do
+                    parse_stack = parse_stack || "vs"
+                    collector = char
+                    collecting = 1
+                    state = "str"
+                    end
+
+                else if char = '{' then do
+                    parse_stack = parse_stack || "vo"
+                    collector = char
+                    collecting = 1
+                    state = "obj"
+                    end
+
+                else if char = '[' then do
+                    parse_stack = parse_stack || "va"
+                    collector = char
+                    collecting = 1
+                    state = "arr"
+                    end
+
+                else if char = 't' | char = 'f' | char = 'n' | char = '-' | (char <= 9 & char >= 0) then do
+                    parse_stack = parse_stack || "v"
+                    collector = char
+                    collecting = 1
+                    state = "endval"
+                    end
+
+                else if char = '' | char = x2c('15') then do /* whitespace matches null value */
+                    nop
+                    end
+                else do
+                    say 'error at 4<br>'
+                    state = "error"
+                    end
+                end
+
+            when state = "endval" then do
+
+                if Right(parse_stack,1) <> "v" then do
+                    say 'error at 5<br>'
+                    state = "error"
+                    end
+                else if char = ',' then do
+                    parse_stack = Delstr(parse_stack, Length(parse_stack) )
+                    table_V.row.column = Strip(Delstr(collector, Length(collector) ))
+                    column = column + 1
+                    collecting = 0
+                    collector = ""
+                    state = "key"
+                    end
+                else if char = '}' then do
+                    parse_stack = Delstr(parse_stack, Length(parse_stack) )
+                    table_V.row.column = Strip(Delstr(collector, Length(collector) ))
+                    collecting = 0
+                    collector = ""
+
+                    /* now end object and check for more */
+                    if Right(parse_stack,1) = "o" then do
+                        parse_stack = Delstr(parse_stack, Length(parse_stack) )
+                        if parse_stack = '' then do
+                            state = "done"
+                            end
+                        else if parse_stack = "a" then do /* level 4 */
+                do while state = "endval"
+                                parse var json 1 char 2 json
+                            if char = "]" then
+                                    state = "done"
+                                else if char = "," then
+                                    state = "go"
+                else if char = '' | char = x2c('15') then
+                    nop
+                                else do
+                                    say 'error at 6 with char=#'char'# and parse_stack='parse_stack'<br>'
+                                    state = "error"
+                                    end
+                end
+                            row = row + 1
+                            end /*level 4 */
+                        else do
+                            say 'error at 7<br>'
+                            state = "error"
+                            end
+            end /* end "if R ight" */
+            else do
+                say 'error at 8<br>'
+                state = "error"
+                end
+            end /* end "if }" */
+        else
+            nop
+        /* there's intentionally no error fallthrough here,
+        because it needs to walk through non-string, non-
+        whitespace tokens like null, numbers, etc */
+        end /* end "when" */
+
+            when state = "str" then do
+                if char = "\" then do
+                    parse var json 1 char 2 json
+                    collector = collector || char
+                    end
+                else if char = '"' then do
+                    parse_stack = Delstr(parse_stack, Length(parse_stack) )
+                    mode = Right(parse_stack,1)
+                    if mode = "k" then
+                        state = "endkey"
+                    else if mode = "v" then
+                        state = "endval"
+                    else if mode = "o" then
+                        state = "obj"
+                    else if mode = "a" then
+                        state = "arr"
+                    end
+                else
+                    nop
+                end
+
+            when state = "obj" then do
+                if char = "{" then
+                    parse_stack = parse_stack || "o"
+                else if char = '"' then do
+                    parse_stack = parse_stack || "s"
+                    state = "str"
+                    end
+                else if char = "}" then do
+                    parse_stack = Delstr(parse_stack, Length(parse_stack) )
+                    mode = Right(parse_stack,1)
+                    if mode = "v" then
+                        state = "endval"
+                    end
+                end
+
+            when state = "arr" then do
+                if char = "[" then
+                    parse_stack = parse_stack || "a"
+                else if char = '"' then do
+                    parse_stack = parse_stack || "s"
+                    state = "str"
+                    end
+                else if char = "]" then do
+                    parse_stack = Delstr(parse_stack, Length(parse_stack) )
+                    mode = Right(parse_stack,1)
+                    if mode = "v" then
+                        state = "endval"
+                    end
+                end
+
+            when state = "done" then do
+                json = ''
+                end
+
+            otherwise do
+                say 'Houston, we have a problem - state is 'state'<br>'
+                state = "error"
+                /* print error message here if desired */
+                say 'We encountered a problem<br>'
+                return -1
+                end
+
+            end /* end select */
+        end /* end do while loop */
+table_COLS=column    /*  need to set number of columns and rows, else we get 1007 error with dtw_tb_table    */
+table_ROWS=row  /* these final values for column and row position should match the table dimensions */
+    return 0    /* exit function */
+%report{%}
+%}
+
+%FUNCTION(DTW_REXX) to_json (IN table) {
+    json = '['
+
+    do i = 1 to table_ROWS-1
+
+        if i = 1 then
+            json = json'{'
+        else
+            json = json',{'
+
+        do j = 1 to table_COLS
+            if j <> 1 then
+                json = json','
+
+            nn = table_N.j
+
+            vv = table_V.i.j
+
+
+            json = json'"'nn'":'vv
+
+        end
+
+        json = json'}'
+
+    end
+
+    json = json']'
+
+    say json
+
+    return 0    /* exit function */
+%report{%}
+%}
+
+
+
+
+%{ ***************TEST**************** %}
+%HTML(REPORT)  {
+
+<h2>$(DTW_MACRO_FILENAME)</h2>
+
+<p>test_json=$(test_json)</p>
+
+ @parse_json(test_json,json_table)
+ @DTW_TB_TABLE(json_table)
+ <hr>
+<p>test_json2=$(test_json2)</p>
+
+  @parse_json(test_json2,json_table)
+  @DTW_TB_TABLE(json_table)
+
+<p>test_json3=$(test_json3)</p>
+  @parse_json(test_json3,json_table)
+  @DTW_TB_TABLE(json_table)
+
+<br>
+@to_json(json_table)
+%}
