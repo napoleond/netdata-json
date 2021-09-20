@@ -1,4 +1,4 @@
-Copyright (c) 2013, David Noël (of Black Chair Studios, Inc.) and Blake McArthur (of BMTS Intranet, Inc.)
+Copyright (c) 2021, guanlong huang (of Black Chair Studios, Inc.) and Blake McArthur (of BMTS Intranet, Inc.)
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
